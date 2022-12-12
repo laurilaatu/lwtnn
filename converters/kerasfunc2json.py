@@ -220,15 +220,15 @@ def _build_node_dict(network):
 
     # now we collapse the node references
     for node in nodes.values():
-            source_nodes = []
-            for source in node.sources:
-                source_nodes.append(nodes[source])
-            node.sources = source_nodes
+        source_nodes = []
+        for source in node.sources:
+            source_nodes.append(nodes[source])
+        node.sources = source_nodes
 
     # Remove the nodes and sources that are of type skip_layers
     removed_nodes = set()
     for node_index, node in nodes.items():
-        if node.layer_type in skip_layers:
+        if _is_a_skipped_node(node):
             removed_nodes.add(node_index)
         else:
             new_sources = []
@@ -242,13 +242,23 @@ def _build_node_dict(network):
 def _get_valid_sources(node_source):
     """Function to get valid sources for a node.
         Apply this recursively"""
-    if node_source.layer_type not in skip_layers:
-        return node_source
-    else:
+    if _is_a_skipped_node(node_source):
         assert len(node_source.sources) == 1
         #@Todo: Check that this will work with two skip_layers in a row
         return _get_valid_sources(node_source.sources[0])
+    else:
+        return node_source
 
+def _is_a_skipped_node(node):
+    """
+    Function to check wether the node layer type is in skip_layers list
+    """
+    if node.layer_type in skip_layers:
+        return True
+    elif "timedistributed" in node.layer_type:
+        if node.keras_layer['config']['layer']['class_name'].lower() in skip_layers:
+            return True
+    return False
 
 def _number_nodes(node_dict):
     for number, node in enumerate(sorted(node_dict.values())):
@@ -263,11 +273,14 @@ def _build_layer(backend, output_layers, node_key, h5, node_dict, layer_dict):
         _build_layer(backend, output_layers, source.get_key(), h5,
                      node_dict, layer_dict)
 
-    # special cases for merge layers
-    if node.layer_type in ['concatenate','merge']:
+    # special cases for merge and add layers
+    if node.layer_type in ['concatenate','merge','add']:
         node.n_outputs = 0
-        for source in node.sources:
-            node.n_outputs += source.n_outputs
+        if node.layer_type == 'add':
+            node.n_outputs = node.sources[0].n_outputs
+        else:
+            for source in node.sources:
+                node.n_outputs += source.n_outputs
         return
     else:
         assert len(node.sources) == 1, "in {}".format(node.layer_type)
@@ -310,6 +323,7 @@ _node_type_map = {
     'batchnormalization': 'feed_forward',
     'merge': 'concatenate',       # <- v1
     'concatenate': 'concatenate', # <- v2
+    'add': 'add',
     'inputlayer': 'input',
     'dense': 'feed_forward',
     # we don't know what type of node based on the activation type
@@ -394,6 +408,7 @@ def _parse_inputs(input_list, vars_per_input):
         assert vars_per_input[input_number] == len(inputs)
 
         nodes.append({'name': node_name, 'variables': inputs})
+
     return nodes
 
 def _parse_outputs(user_outputs, output_layers, node_dict):
